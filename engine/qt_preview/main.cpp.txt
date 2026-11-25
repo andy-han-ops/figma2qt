@@ -1,0 +1,483 @@
+#include <QAbstractButton>
+#include <QApplication>
+#include <QBuffer>
+#include <QCommandLineOption>
+#include <QCommandLineParser>
+#include <QDir>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QFontDatabase>
+#include <QFontInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLayout>
+#include <QPixmap>
+#include <QRegularExpression>
+#include <QResource>
+#include <QScopedPointer>
+#include <QSet>
+#include <QStyle>
+#include <QStyleFactory>
+#include <QTextStream>
+#include <QUiLoader>
+#include <QWidget>
+#include <QXmlStreamReader>
+
+namespace {
+
+// Fonts are never guessed: the caller passes explicit --font-file entries, or a
+// --font-dir whose *.ttf/*.otf/*.ttc files are all registered.
+QStringList scanFontDirectory(const QString &fontDirectory)
+{
+    QStringList files;
+    const QDir directory(fontDirectory);
+    const QStringList filters = QStringList() << "*.ttf" << "*.otf" << "*.ttc";
+    for (const QFileInfo &info : directory.entryInfoList(filters, QDir::Files, QDir::Name))
+        files.append(info.absoluteFilePath());
+    return files;
+}
+
+QFont::Weight qssWeight(int weight)
+{
+    if (weight < 150)
+        return QFont::Thin;
+    if (weight < 250)
+        return QFont::ExtraLight;
+    if (weight < 350)
+        return QFont::Light;
+    if (weight < 450)
+        return QFont::Normal;
+    if (weight < 550)
+        return QFont::Medium;
+    if (weight < 650)
+        return QFont::DemiBold;
+    if (weight < 750)
+        return QFont::Bold;
+    if (weight < 850)
+        return QFont::ExtraBold;
+    return QFont::Black;
+}
+
+QString applyFontMaps(QString text, const QStringList &maps)
+{
+    for (const QString &mapping : maps) {
+        const int separator = mapping.indexOf(QLatin1Char('='));
+        if (separator <= 0)
+            continue;
+        const QString from = mapping.left(separator);
+        const QString to = mapping.mid(separator + 1);
+        if (to.startsWith(from) && to.size() > from.size()) {
+            // Do not turn an existing "<to>" into "<to><suffix>" (for example
+            // "Family 2.0" into "Family 2.0 2.0" when mapping "Family" -> "Family 2.0").
+            const QString suffix = to.mid(from.size()).trimmed();
+            text.replace(QRegularExpression(QRegularExpression::escape(from)
+                                            + QStringLiteral("(?!\\s*")
+                                            + QRegularExpression::escape(suffix)
+                                            + QStringLiteral(")")),
+                         to);
+        } else {
+            text.replace(from, to);
+        }
+    }
+    return text;
+}
+
+QJsonArray toJsonArray(const QStringList &values)
+{
+    QJsonArray array;
+    for (const QString &value : values)
+        array.append(value);
+    return array;
+}
+
+QStringList collectStyleSheetTexts(const QString &xml)
+{
+    QStringList result;
+    QXmlStreamReader reader(xml);
+    QString currentProperty;
+    bool inStyleSheetString = false;
+    QString text;
+
+    while (!reader.atEnd()) {
+        reader.readNext();
+        if (reader.isStartElement()) {
+            if (reader.name().toString() == QLatin1String("property")) {
+                currentProperty =
+                    reader.attributes().value(QLatin1String("name")).toString();
+            } else if (reader.name().toString() == QLatin1String("string")) {
+                inStyleSheetString =
+                    currentProperty == QLatin1String("styleSheet");
+                text.clear();
+            }
+        } else if (reader.isCharacters() && inStyleSheetString) {
+            text += reader.text().toString();
+        } else if (reader.isEndElement()) {
+            if (reader.name().toString() == QLatin1String("string")
+                && inStyleSheetString) {
+                result.append(text);
+                inStyleSheetString = false;
+            } else if (reader.name().toString() == QLatin1String("property")) {
+                currentProperty.clear();
+            }
+        }
+    }
+
+    return result;
+}
+
+QJsonObject dumpWidget(QWidget *widget)
+{
+    QJsonObject object;
+    object["class"] = QString::fromLatin1(widget->metaObject()->className());
+    object["name"] = widget->objectName();
+    object["visible"] = widget->isVisible();
+    object["styleSheet"] = !widget->styleSheet().isEmpty();
+
+    const QRect geometry = widget->geometry();
+    QJsonArray geometryArray;
+    geometryArray.append(geometry.x());
+    geometryArray.append(geometry.y());
+    geometryArray.append(geometry.width());
+    geometryArray.append(geometry.height());
+    object["geometry"] = geometryArray;
+
+    const QFontInfo fontInfo(widget->font());
+    object["fontFamily"] = fontInfo.family();
+    object["fontStyle"] = fontInfo.styleName();
+
+    if (QLabel *label = qobject_cast<QLabel *>(widget)) {
+        object["text"] = label->text();
+    } else if (QAbstractButton *button = qobject_cast<QAbstractButton *>(widget)) {
+        object["text"] = button->text();
+    }
+
+    QJsonArray children;
+    const QList<QWidget *> directChildren =
+        widget->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly);
+    for (QWidget *child : directChildren)
+        children.append(dumpWidget(child));
+    if (!children.isEmpty())
+        object["children"] = children;
+
+    return object;
+}
+
+struct FontLoadResult
+{
+    QStringList loadedFiles;
+    QSet<QString> families;
+};
+
+FontLoadResult loadFonts(const QStringList &explicitFiles, const QString &fontDirectory)
+{
+    FontLoadResult result;
+    QStringList files = explicitFiles;
+
+    if (files.isEmpty() && !fontDirectory.isEmpty())
+        files = scanFontDirectory(fontDirectory);
+
+    for (const QString &path : files) {
+        const int id = QFontDatabase::addApplicationFont(path);
+        if (id < 0) {
+            qWarning().noquote() << "font load failed:" << path;
+            continue;
+        }
+        result.loadedFiles.append(QFileInfo(path).absoluteFilePath());
+        const QStringList families = QFontDatabase::applicationFontFamilies(id);
+        for (const QString &family : families)
+            result.families.insert(family);
+    }
+
+    return result;
+}
+
+QJsonObject fontAudit(const QString &fontFamily,
+                      const FontLoadResult &loaded,
+                      const QString &legacyFamily = QString())
+{
+    const QStringList styles = QFontDatabase().styles(fontFamily);
+
+    QJsonObject weights;
+    for (int weight : {100, 200, 300, 400, 500, 600, 700, 800, 900}) {
+        QFont font(fontFamily);
+        font.setWeight(qssWeight(weight));
+        const QFontInfo info(font);
+        weights[QString::number(weight)] = info.styleName();
+    }
+
+    QJsonObject audit;
+    audit["requestedFamily"] = fontFamily;
+    audit["familyPresent"] = !styles.isEmpty();
+    audit["styles"] = toJsonArray(styles);
+    audit["weights"] = weights;
+    audit["loadedFiles"] = toJsonArray(loaded.loadedFiles);
+    if (!legacyFamily.isEmpty()) {
+        const QFont legacyFont(legacyFamily);
+        const QFontInfo legacyInfo(legacyFont);
+        audit["legacyFamily"] = legacyFamily;
+        audit["legacyFamilyDetected"] = legacyInfo.family() == legacyFamily;
+    }
+    return audit;
+}
+
+} // namespace
+
+int main(int argc, char *argv[])
+{
+    QCoreApplication::setAttribute(Qt::AA_DisableHighDpiScaling);
+    QApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("qt_preview"));
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription(
+        QStringLiteral("Headless Qt Widgets preview renderer for Figma-to-Qt automation."));
+    parser.addHelpOption();
+
+    const QCommandLineOption uiOption(
+        QStringList() << "u" << "ui", QStringLiteral("Input .ui file."), QStringLiteral("path"));
+    const QCommandLineOption outOption(
+        QStringList() << "o" << "out", QStringLiteral("Output PNG file."), QStringLiteral("path"));
+    const QCommandLineOption rccOption(
+        QStringLiteral("rcc"), QStringLiteral("Qt resource .rcc file (repeatable)."),
+        QStringLiteral("path"));
+    const QCommandLineOption fontDirOption(
+        QStringLiteral("font-dir"),
+        QStringLiteral("Directory whose *.ttf/*.otf/*.ttc files are registered when no --font-file is given."),
+        QStringLiteral("path"));
+    const QCommandLineOption fontFileOption(
+        QStringLiteral("font-file"), QStringLiteral("Explicit font file (repeatable)."),
+        QStringLiteral("path"));
+    const QCommandLineOption fontFamilyOption(
+        QStringLiteral("font-family"), QStringLiteral("Font family to use (required)."),
+        QStringLiteral("name"));
+    const QCommandLineOption requireStyleOption(
+        QStringLiteral("require-style"),
+        QStringLiteral("Style name that must exist in the family for --font-audit (repeatable)."),
+        QStringLiteral("style"));
+    const QCommandLineOption legacyFamilyOption(
+        QStringLiteral("legacy-family"),
+        QStringLiteral("Report whether this legacy family resolves to itself (font audit)."),
+        QStringLiteral("name"));
+    const QCommandLineOption fontMapOption(
+        QStringLiteral("font-map"),
+        QStringLiteral("Legacy family replacement old=new (repeatable)."),
+        QStringLiteral("mapping"));
+    const QCommandLineOption widthOption(
+        QStringLiteral("width"), QStringLiteral("Render width in pixels."),
+        QStringLiteral("px"), QStringLiteral("0"));
+    const QCommandLineOption heightOption(
+        QStringLiteral("height"), QStringLiteral("Render height in pixels."),
+        QStringLiteral("px"), QStringLiteral("0"));
+    const QCommandLineOption dumpJsonOption(
+        QStringLiteral("dump-json"), QStringLiteral("Write widget tree and QSS stats as JSON."),
+        QStringLiteral("path"));
+    const QCommandLineOption styleOption(
+        QStringLiteral("style"), QStringLiteral("Qt style to use (for example Fusion)."),
+        QStringLiteral("name"));
+    const QCommandLineOption fontAuditOption(
+        QStringLiteral("font-audit"), QStringLiteral("Print font audit JSON and exit."));
+    const QCommandLineOption allowMissingResourcesOption(
+        QStringLiteral("allow-missing-resources"),
+        QStringLiteral("Do not fail when inline QSS references missing resources."));
+
+    parser.addOption(uiOption);
+    parser.addOption(outOption);
+    parser.addOption(rccOption);
+    parser.addOption(fontDirOption);
+    parser.addOption(fontFileOption);
+    parser.addOption(fontFamilyOption);
+    parser.addOption(requireStyleOption);
+    parser.addOption(legacyFamilyOption);
+    parser.addOption(fontMapOption);
+    parser.addOption(widthOption);
+    parser.addOption(heightOption);
+    parser.addOption(dumpJsonOption);
+    parser.addOption(styleOption);
+    parser.addOption(fontAuditOption);
+    parser.addOption(allowMissingResourcesOption);
+    parser.process(app);
+
+    if (!parser.value(styleOption).isEmpty()) {
+        QStyle *style = QStyleFactory::create(parser.value(styleOption));
+        if (!style) {
+            qCritical().noquote() << "unknown Qt style:" << parser.value(styleOption);
+            return 2;
+        }
+        QApplication::setStyle(style);
+    }
+
+    const QString fontFamily = parser.value(fontFamilyOption);
+    if (fontFamily.isEmpty()) {
+        qCritical().noquote() << "--font-family is required.";
+        return 2;
+    }
+    const QString fontDirectory = parser.value(fontDirOption);
+
+    const FontLoadResult loaded = loadFonts(parser.values(fontFileOption), fontDirectory);
+
+    if (parser.isSet(fontAuditOption)) {
+        QJsonObject audit = fontAudit(fontFamily, loaded, parser.value(legacyFamilyOption));
+        const QStringList styles = QFontDatabase().styles(fontFamily);
+        const QStringList required = parser.values(requireStyleOption);
+        bool complete = !styles.isEmpty();
+        QStringList missingStyles;
+        for (const QString &style : required) {
+            if (!styles.contains(style)) {
+                complete = false;
+                missingStyles.append(style);
+            }
+        }
+        audit["requiredStyles"] = toJsonArray(required);
+        audit["missingStyles"] = toJsonArray(missingStyles);
+        audit["complete"] = complete;
+        QTextStream(stdout) << QJsonDocument(audit).toJson(QJsonDocument::Indented);
+        return complete ? 0 : 1;
+    }
+
+    const QString uiPath = parser.value(uiOption);
+    const QString outPath = parser.value(outOption);
+    if (uiPath.isEmpty() || outPath.isEmpty()) {
+        qCritical().noquote() << "--ui and --out are required (unless --font-audit is used).";
+        return 2;
+    }
+
+    for (const QString &rcc : parser.values(rccOption)) {
+        if (!QResource::registerResource(rcc)) {
+            qCritical().noquote() << "failed to register resource:" << rcc;
+            return 2;
+        }
+    }
+
+    QFile uiFile(uiPath);
+    if (!uiFile.open(QIODevice::ReadOnly)) {
+        qCritical().noquote() << "failed to open .ui:" << uiPath;
+        return 2;
+    }
+    QString uiText = QString::fromUtf8(uiFile.readAll());
+    uiText = applyFontMaps(uiText, parser.values(fontMapOption));
+
+    const QStringList styleSheetTexts = collectStyleSheetTexts(uiText);
+
+    QBuffer buffer;
+    buffer.setData(uiText.toUtf8());
+    buffer.open(QIODevice::ReadOnly);
+
+    QUiLoader loader;
+    QWidget *root = loader.load(&buffer, nullptr);
+    if (!root) {
+        qCritical().noquote() << "failed to load .ui:" << loader.errorString();
+        return 2;
+    }
+    QScopedPointer<QWidget> rootGuard(root);
+
+    int width = parser.value(widthOption).toInt();
+    int height = parser.value(heightOption).toInt();
+    if (width <= 0)
+        width = root->width() > 0 ? root->width() : 1920;
+    if (height <= 0)
+        height = root->height() > 0 ? root->height() : 1080;
+
+    root->resize(width, height);
+    root->show();
+    root->ensurePolished();
+    if (root->layout())
+        root->layout()->activate();
+    QApplication::processEvents(QEventLoop::AllEvents, 100);
+    QApplication::processEvents(QEventLoop::AllEvents, 100);
+
+    const QPixmap pixmap = root->grab();
+    if (pixmap.isNull() || !pixmap.save(outPath, "PNG")) {
+        qCritical().noquote() << "failed to save render:" << outPath;
+        return 2;
+    }
+
+    QJsonObject inlineQss;
+    inlineQss["styleSheetProperties"] = styleSheetTexts.size();
+
+    QSet<QString> imageRefs;
+    {
+        const QRegularExpression re(QStringLiteral("url\\(\\s*(:[^)]+?)\\s*\\)"));
+        for (const QString &styleSheet : styleSheetTexts) {
+            auto it = re.globalMatch(styleSheet);
+            while (it.hasNext())
+                imageRefs.insert(it.next().captured(1));
+        }
+    }
+    QJsonArray imageRefsArray;
+    QStringList missingResources;
+    for (const QString &ref : imageRefs) {
+        imageRefsArray.append(ref);
+        if (!QFile::exists(ref))
+            missingResources.append(ref);
+    }
+    inlineQss["imageRefs"] = imageRefsArray;
+    inlineQss["missingResources"] = toJsonArray(missingResources);
+
+    int embeddedPixmaps = 0;
+    for (const QString &tag : QStringList()
+             << "<pixmap>" << "<iconset>" << "<normaloff>" << "<normalon>") {
+        embeddedPixmaps += uiText.count(tag);
+    }
+    inlineQss["embeddedPixmaps"] = embeddedPixmaps;
+
+    QSet<QString> fontFamilies;
+    {
+        const QRegularExpression re(QStringLiteral("font-family\\s*:\\s*([^;\\n]+)"));
+        for (const QString &styleSheet : styleSheetTexts) {
+            auto it = re.globalMatch(styleSheet);
+            while (it.hasNext()) {
+                QString value = it.next().captured(1).trimmed();
+                value.remove(QLatin1Char('"'));
+                fontFamilies.insert(value);
+            }
+        }
+    }
+    {
+        const QRegularExpression re(QStringLiteral("<family>([^<]+)</family>"));
+        auto it = re.globalMatch(uiText);
+        while (it.hasNext())
+            fontFamilies.insert(it.next().captured(1).trimmed());
+    }
+    QJsonArray fontFamiliesArray;
+    for (const QString &family : fontFamilies)
+        fontFamiliesArray.append(family);
+    inlineQss["fontFamilies"] = fontFamiliesArray;
+
+    if (!parser.value(dumpJsonOption).isEmpty()) {
+        QJsonObject document;
+        document["ui"] = QFileInfo(uiPath).absoluteFilePath();
+        document["width"] = width;
+        document["height"] = height;
+        document["rcc"] = toJsonArray(parser.values(rccOption));
+        document["fontFamily"] = fontFamily;
+        document["fontAudit"] = fontAudit(fontFamily, loaded, parser.value(legacyFamilyOption));
+        document["inlineQss"] = inlineQss;
+        document["widget"] = dumpWidget(root);
+
+        QFile dumpFile(parser.value(dumpJsonOption));
+        if (!dumpFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            qCritical().noquote() << "failed to write dump:" << dumpFile.fileName();
+            return 2;
+        }
+        dumpFile.write(QJsonDocument(document).toJson(QJsonDocument::Indented));
+    }
+
+    QTextStream out(stdout);
+    out << "rendered " << QFileInfo(outPath).absoluteFilePath()
+        << " " << width << "x" << height << "\n";
+    out << "inline styleSheet properties: " << styleSheetTexts.size() << "\n";
+    out << "image refs: " << imageRefs.size()
+        << ", missing: " << missingResources.size() << "\n";
+    if (!missingResources.isEmpty()) {
+        out << "missing resources:\n";
+        for (const QString &resource : missingResources)
+            out << "  " << resource << "\n";
+        if (!parser.isSet(allowMissingResourcesOption))
+            return 3;
+    }
+
+    return 0;
+}

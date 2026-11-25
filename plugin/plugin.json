@@ -1,0 +1,11 @@
+{
+  "name": "figma2qt",
+  "displayName": "Figma to Qt",
+  "version": "1.0.0",
+  "description": "Restore Figma frames as Qt Widgets .ui files (inline QSS, real text widgets) and verify them with a headless render plus pixel diff. Windows, Qt 5.15 MSVC; Qt path and font are configured per project.",
+  "suggestedPrompts": [
+    "通过 Figma 还原 UI：<Figma 链接>，页面 id login",
+    "Initialise .figma2qt/ in this project and check the toolchain",
+    "Verify my login.ui against this Figma reference"
+  ]
+}

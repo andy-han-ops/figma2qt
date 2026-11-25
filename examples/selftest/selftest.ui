@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SelfTestPage</class>
+ <widget class="QWidget" name="SelfTestPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>640</width>
+    <height>360</height>
+   </rect>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">#SelfTestPage * { font-family: "@FONT_FAMILY@"; }
+#SelfTestPage { background-color: #0E1726; }
+#cardWidget { background-color: rgba(16, 23, 38, 0.95); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; }
+#lblTitle { color: #FFFFFF; font-size: 28px; font-weight: 700; }
+#lblHint { color: #6C7D93; font-size: 14px; font-weight: 400; }
+#editName { background-color: #1B222C; border: 1px solid #2B3545; border-radius: 8px; padding-left: 12px; color: #FFFFFF; font-size: 14px; }
+#btnOk { background-color: #1664FF; color: #FFFFFF; font-size: 16px; font-weight: 700; border-radius: 8px; border: none; }
+#btnOk:hover { background-color: #337CFF; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="leftMargin"><number>64</number></property>
+   <property name="topMargin"><number>48</number></property>
+   <property name="rightMargin"><number>64</number></property>
+   <property name="bottomMargin"><number>48</number></property>
+   <item>
+    <widget class="QWidget" name="cardWidget">
+     <layout class="QVBoxLayout" name="cardLayout">
+      <property name="leftMargin"><number>32</number></property>
+      <property name="topMargin"><number>24</number></property>
+      <property name="rightMargin"><number>32</number></property>
+      <property name="bottomMargin"><number>24</number></property>
+      <property name="spacing"><number>16</number></property>
+      <item>
+       <widget class="QLabel" name="lblTitle">
+        <property name="text"><string>figma2qt self-test</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="lblHint">
+        <property name="text"><string>Rendered with the profile font</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="editName">
+        <property name="minimumSize"><size><width>0</width><height>40</height></size></property>
+        <property name="placeholderText"><string>Type here</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btnOk">
+        <property name="minimumSize"><size><width>0</width><height>44</height></size></property>
+        <property name="text"><string>OK</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

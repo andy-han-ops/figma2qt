@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+build/
+bin/
+dist/
+.figma2qt/work/

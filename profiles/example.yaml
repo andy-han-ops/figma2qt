@@ -1,0 +1,57 @@
+# figma2qt project profile.
+# The fields marked REQUIRED have no defaults. While they are empty every
+# figma2qt command stops and explains what is missing.
+
+qt:
+  # REQUIRED. Qt install root that contains bin/rcc.exe and plugins/.
+  # Must be the Qt (5.15.x, MSVC x64) that bin/qt_preview.exe was built with.
+  prefix: ""
+  # Optional. CMake generator used by `preflight --build-harness`.
+  # generator: "Visual Studio 16 2019"
+  # Optional. Use another qt_preview.exe instead of the one shipped in bin/.
+  # preview_exe: ""
+
+font:
+  # REQUIRED. Font family exactly as Qt reports it; used in generated QSS.
+  family: ""
+  # REQUIRED. Directory that contains the font files.
+  dir: ""
+  # Optional. File names or globs inside font.dir.
+  # Default: every .ttf/.otf/.ttc file in the directory.
+  # files: ["MyFont-*.ttf"]
+  # Optional. Styles that must exist in the family (preflight fails otherwise).
+  # required_styles: ["Regular", "Bold"]
+  # Optional. QSS font-weight -> style name; copied into the agent prompts.
+  # weights: {400: "Regular", 700: "Bold"}
+  # Optional. Legacy family renames applied when rendering old .ui files ("old=new").
+  # maps: []
+  # Optional. Legacy family name to audit (reports whether it still resolves).
+  # legacy_family: ""
+
+# ---- optional settings below -------------------------------------------------
+canvas: [1920, 1080]
+max_rounds: 6
+thresholds:
+  ssim: 0.97
+  mismatch_ratio: 0.015
+  delta_e_mean: 4.0
+semantic:
+  required: true
+  min_text_widgets: 1
+  forbid_transparent_text: true
+  forbid_card_images: true
+assets:
+  # Folders (relative to the project root) holding reusable images / .qrc files.
+  # The agent matches Figma layers against these before exporting new images.
+  search_dirs: []
+  reuse: true
+agy:
+  mode: accept-edits
+  agent: qt-ui-repairer
+  timeout: 1200
+  # model: ""
+output:
+  icons: icons
+  qrc: resources.qrc
+  resource_prefix: /res
+# work_dir: ../figma2qt-work
